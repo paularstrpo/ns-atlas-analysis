@@ -1,0 +1,20 @@
+#!/bin/bash
+#BSUB -J CONCAT_BAYSOR
+#BSUB -P acc_ji_lab
+#BSUB -q express
+#BSUB -n 4
+#BSUB -R "rusage[mem=8GB]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 0:30
+#BSUB -Ep 'mailx -s "LSF Job ${LSB_JOBNAME} ${LSB_JOBID} exited with status ${LSB_JOB_STATUS}" paula.restrepo@icahn.mssm.edu'
+#BSUB -o /sc/arion/projects/ji_lab/DATA/MERFISH/segmentation/NS-Atlas/baysor_0.7.1/concat_baysor_h5ads.%J.log
+#BSUB -eo /sc/arion/projects/ji_lab/DATA/MERFISH/segmentation/NS-Atlas/baysor_0.7.1/concat_baysor_h5ads.%J.err
+#BSUB -L /bin/bash
+
+set -e # exit whole thing if one command fails
+
+cd /sc/arion/projects/ji_lab/DATA/MERFISH/segmentation/NS-Atlas/baysor_0.7.1
+ml singularity
+
+singularity run /sc/arion/projects/ji_lab/TOOLS/sif/merpy_latest.sif \
+python /sc/arion/projects/ji_lab/DATA/MERFISH/segmentation/NS-Atlas/baysor_0.7.1/concat_h5ad.py

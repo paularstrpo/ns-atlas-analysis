@@ -1,0 +1,205 @@
+---
+title: "Figure 6: Cell-Cell Communication Across Neighborhoods"
+author: "Paula Restrepo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(Matrix)
+library(tidyverse)
+library(CellChat)
+```
+
+
+```{r load-cellchat-objects, include=FALSE}
+merfish.cellchat.list <- qs::qread("data/merfish/BAYSOR/ligand_receptor/CellChat/neighborhood/neighborhood.cellchat_object.list.QS")
+scrna.cellchat.list <- qs::qread("data/scrna/ligand_receptor/neighborhoods/scrna.neighborhood.cellchat_object.list.QS")
+names(scrna.cellchat.list) <- names(merfish.cellchat.list)
+
+neighborhoods <- names(merfish.cellchat.list)
+neighborhood.colors <- pals::glasbey(length(merfish.cellchat.list))
+
+merfish.cellchat.merged <- mergeCellChat(merfish.cellchat.list, add.names = neighborhoods, cell.prefix = TRUE)
+scrna.cellchat.merged <- mergeCellChat(scrna.cellchat.list, add.names = neighborhoods, cell.prefix = TRUE)
+invisible(gc())
+```
+
+## Perivascular I
+
+```{r pull-out-neighborhood}
+nhood <- "PERIVASC-I"
+merfish.cc.obj <- merfish.cellchat.list[[nhood]]
+scrna.cc.obj <- scrna.cellchat.list[[nhood]]
+nhood.celltypes <- unique(c(levels(merfish.cc.obj@idents), levels(scrna.cc.obj@idents)))
+nhood.celltypes
+```
+
+
+
+```{r merge-lr-results}
+scrna.df <- data.frame(subsetCommunication(scrna.cc.obj, thresh = 0.01))
+scrna.df$cell_pair <- paste0(scrna.df$source, " -> ", scrna.df$target)
+scrna.df$scrna.prob <- scrna.df$prob
+scrna.df$scrna.pval <- scrna.df$pval
+scrna.df$pval <- NULL
+scrna.df$prob <- NULL
+
+merfish.df <- data.frame(subsetCommunication(merfish.cc.obj, thresh = 0.01))
+merfish.df$cell_pair <- paste0(merfish.df$source, " -> ", merfish.df$target)
+merfish.df$merfish.prob <- merfish.df$prob
+merfish.df$merfish.pval <- merfish.df$pval
+merfish.df$pval <- NULL
+merfish.df$prob <- NULL
+
+merged.df <- scrna.df %>% full_join(merfish.df)
+merged.df$scrna.prob[is.na(merged.df$scrna.prob)] <- 0
+merged.df$merfish.prob[is.na(merged.df$merfish.prob)] <- 0
+merged.df$scrna.pval[is.na(merged.df$scrna.pval)] <- 1
+merged.df$merfish.pval[is.na(merged.df$merfish.pval)] <- 1
+
+merged.df$combined.score <- (merged.df$scrna.prob + merged.df$merfish.prob)
+
+overlap.interactions <- scrna.df %>% inner_join(merfish.df) %>% filter(scrna.pval < 0.01 & merfish.pval < 0.01)
+
+min.scrna.prob <- min(overlap.interactions$scrna.prob)
+min.merfish.prob <- min(overlap.interactions$merfish.prob)
+min.prob <- min((overlap.interactions$merfish.prob + overlap.interactions$scrna.prob))
+
+merged.df$merfish.is_signif <- merged.df$merfish.pval < 0.01
+merged.df$scrna.is_signif <- merged.df$scrna.pval < 0.01
+merged.df$comb.prob_cutoff <- merged.df$combined.score > min.prob
+merged.df$merfish.prob_cutoff <- merged.df$merfish.prob > min.merfish.prob
+merged.df$scrna.prob_cutoff <- merged.df$scrna.prob > min.scrna.prob
+merged.df$is_signif <- merged.df$merfish.is_signif | merged.df$scrna.is_signif
+merged.df$prob_cutoff <- merged.df$comb.prob_cutoff & merged.df$scrna.prob_cutoff
+
+table(merged.df$prob_cutoff & merged.df$is_signif & merged.df$cell_pair %in% unique(merfish.df$cell_pair))
+merged.df <- merged.df %>% 
+  filter(is_signif & prob_cutoff) %>%
+  filter(cell_pair %in% unique(merfish.df$cell_pair)) 
+```
+
+
+```{r get-top-pathways-secreted-signaling}
+pathway.scores <- merged.df %>%
+  filter(annotation == "Secreted Signaling") %>% 
+  group_by(pathway_name) %>% 
+  summarise(weight = sum(combined.score), count = n()) %>% 
+  arrange(-weight)
+
+pathway.scores
+```
+
+```{r fig.height=5, fig.width=3}
+# svglite::svglite("figures/scrna/ligand_receptor/Fig6_Perivasc-I.top_pathways.svg", height=5, width=3)
+pathway.scores %>%
+  top_n(15, weight*count) %>%
+ggplot() + 
+  aes(x = reorder(pathway_name, count), y = count, fill = weight) + 
+  geom_bar(stat='identity') + coord_flip() + theme_classic() + 
+  labs(x="Pathway", y="Interaction Strength")
+# dev.off()
+```
+```{r}
+top.pathways <- pathway.scores %>% top_n(15, weight*count) %>% dplyr::select(pathway_name) %>% deframe()
+```
+
+```{r}
+top.senders <- sort(colSums(merfish.cc.obj@net$weight), decreasing = TRUE)
+top.receivers <- sort(rowSums(merfish.cc.obj@net$weight), decreasing = TRUE)
+```
+
+```{r}
+top.lrdf <- merged.df %>% 
+  filter(pathway_name %in% top.pathways) %>% 
+  filter(source %in% names(top.senders[1:5]) & target %in% names(top.receivers[1:5])) %>% 
+  filter(source != target) 
+```
+
+
+```{r fig.height=5, fig.width=5}
+svglite::svglite(filename = "figures/scrna/ligand_receptor/Fig6_Perivasc-I.immune_stromal.hits2.circos.svg", height=5, width=5)
+
+netVisual_chord_gene(scrna.cc.obj,
+                     signaling = top.pathways,
+                     sources.use = names(top.senders[1:2]), 
+                     targets.use =  names(top.receivers[1:3]),
+                     thresh = 0.01, legend.pos.x = 10, legend.pos.y = 5)
+dev.off()
+```
+```{r fig.height=5, fig.width=5}
+svglite::svglite(filename = "figures/scrna/ligand_receptor/Fig6_Perivasc-I.stromal2immune.hits2.circos.svg", height=5, width=5)
+netVisual_chord_gene(scrna.cc.obj,
+                     signaling = top.pathways,
+                     targets.use =  names(top.senders[1:2]), 
+                     sources.use =  names(top.receivers[1:3]),
+                     thresh = 0.01, legend.pos.x = 10, legend.pos.y = 5)
+dev.off()
+```
+
+## Anatomic Sites - Imputed
+
+```{r}
+library(tidyverse)
+library(Matrix)
+library(Seurat)
+library(reticulate)
+library(rhdf5)
+library(anndata)
+library(SingleCellExperiment)
+library(scater)
+library(edgeR)
+library(limma)
+library(variancePartition)
+library(dreamlet)
+
+setwd("D:/Dropbox/_projects/NormalSkinAtlas")
+
+merfish.obj <- qs::qread("data/merfish/BAYSOR/seurat_objects/ns-atlas.merfish_baysor.scanvi_integrated.cellcharter.annotated.filtered.seurat_object.QS")
+VlnPlot(merfish.obj, "nCount_RNA", group.by = 'donor_id', pt.size=0, log = TRUE) + geom_boxplot(width=0.2, aes(fill=NULL))
+
+# Add observation metadata
+meta <- merfish.obj@meta.data
+h5ad <- "data/merfish/BAYSOR/ligand_receptor/Tangram/merfish.tangram_projected.lr_scores.full.anndata_object.h5ad"
+adata <- anndata::read_h5ad(h5ad)
+expr <- adata$layers['gmean']
+expr <- t(expr)
+gc()
+
+
+barcodes <- intersect(rownames(meta), colnames(expr))
+info <- meta[barcodes,]
+expr <- expr[, barcodes]
+gc()
+
+
+
+nhood='PERIVASC-I'
+cell_types <-  c("CCR7+ DC","CD4+ Treg","Naïve T","CD8+ Tc","CD4+ Th","Mast","CD1C+ DC","CLEC9A+ DC","Perivasc Fib I","Perivasc Fib II", "VEC","Peri","HEC","Plasma","Cyc Imm","Mac","Mono")
+
+
+info <-  info[info$cell_type.detailed %in% cell_types & info$neighborhood == nhood,]
+expr <- expr[, rownames(info)]
+info$observation_id <- paste0(info$sample_barcode, ".", info$neighborhood, ".", info$cell_type.detailed)
+obs <- unique(info$observation_id)
+lrmat <- sapply(obs, function(sn){
+  rowMeans(expr[, info$observation_id == sn, drop = FALSE], na.rm = TRUE)
+})
+
+lrmat[1:5,1:5]
+
+info <- unique(info[, c("observation_id", "sample_barcode", "cell_type.detailed", "neighborhood", 'anatomic_site', 'donor_id', 'donor_sex', 'batch', 'gene_panel')])
+rownames(info) <- info$observation_id
+info <- info[colnames(lrmat),]
+
+info <- info[info$donor_id %in% c("D165","D077", "D082", "D107", "D145", "D149", "D151"), ]
+lrmat <- as.matrix(lrmat[,rownames(info)])
+
+zmat <- as.matrix(sapply(rownames(lrmat), function(x){ as.numeric(scale(lrmat[x,], center = TRUE))}))
+
+```
+

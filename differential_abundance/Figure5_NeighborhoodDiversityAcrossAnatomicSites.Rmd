@@ -1,0 +1,1203 @@
+---
+title: "CellTypeSiteDiversityAnalysis"
+author: "Paula Restrepo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(circlize)
+library(RColorBrewer)
+library(paletteer)
+library(ggrepel)
+library(ggbeeswarm)
+library(ggpubr)
+library(patchwork)
+library(Seurat)
+library(Matrix)
+library(tidyverse)
+library(DirichletReg)
+library(edgeR)
+library(limma)
+library(variancePartition)
+library(dreamlet)
+library(crumblr)
+library(SingleCellExperiment)
+library(vegan)
+library(microbiome)
+# Plotting Parameters
+
+## ggplot themes
+theme <- theme(
+  legend.position = 'right',
+  text = element_text(color = 'black', size = 10),
+  title = element_text(face = 'bold', size = 12, color = 'black', hjust = 0.5),
+  strip.background = element_rect(fill = 'black', color = 'black'),
+  strip.text = element_text(color = 'white', face = 'bold', size = 12),
+  plot.title = element_text(size = 14, color = 'black', face = 'bold', hjust = 0.5),
+  panel.background = element_rect(color = 'black', fill = NA),
+  plot.background = element_blank(), 
+  legend.background = element_blank(), 
+  legend.key = element_blank()
+  )
+
+spatial_theme <- theme(
+  rect = element_blank(),
+  line = element_blank(),
+  text = element_text(color = 'black', size = 10),
+  title = element_text(face = 'bold', size = 12, color = 'black', hjust = 0.5),
+  strip.background = element_rect(fill = 'black', color = 'black'),
+  strip.text = element_text(color = 'white', face = 'bold', size = 12),
+  plot.title = element_text(size = 14, color = 'black', face = 'bold', hjust = 0.5),
+  axis.text = element_blank()
+  )
+```
+
+```{r load-data}
+obj <- qs::qread("data/merfish/BAYSOR/seurat_objects/ns-atlas.merfish_baysor.scanvi_integrated.cellcharter.annotated.seurat_object.QS")
+
+obj <- subset(obj, 
+              subset = 
+                cell_type.detailed != "Doublet" & 
+                cell_type.detailed != "Unknown" & 
+                tissue_compartment != "outside tissue")
+
+# remove forearm and chest since they don't have enough donors (min 3+ unique donors per site for stats)
+obj <- subset(obj, subset = anatomic_site != "Forearm" & anatomic_site != "Chest")
+invisible(gc())
+
+meta <- obj@meta.data
+
+cell_types <- levels(meta$cell_type.detailed)
+cell_types <- cell_types[! cell_types %in% c("Doublet", "Unknown")]
+names(cell_types) <- make.names(cell_types)
+names(cell_types)[42] <- "Naive.T"
+
+meta <- obj@meta.data
+sce <- SingleCellExperiment(assays = list(counts = obj[['RNA']]$counts), colData = obj@meta.data)
+```
+
+```{r make-pseudobulk}
+pb <- aggregateToPseudoBulk(sce,
+                            assay = "counts",
+                            cluster_id = "neighborhood",
+                            sample_id = "sample_barcode",
+                            verbose = FALSE)
+assayNames(pb)
+pb$sample_barcode<- colnames(pb)
+counts <- cellCounts(pb)
+```
+
+```{r load-compartment-areas}
+tissue_areas <- read.csv('data/merfish/BAYSOR/metadata/tissue_compartment_areas.csv')
+tissue_areas$sample_barcode <- substr(tissue_areas$sample_compartment, 1, nchar(tissue_areas$sample_compartment)-4)
+tissue_areas <- tissue_areas[, c("sample_barcode", 'total_area_mm2',"compartment.short",'compartment_area_mm2')]
+
+tissue_areas <- tissue_areas %>% 
+  pivot_wider(names_from = 'compartment.short', values_from = 'compartment_area_mm2', names_prefix = "AREA_", values_fill = 0)
+colnames(tissue_areas) <- c("sample_barcode", "total_area_mm2", "dermis_area_mm2", 'epidermis_area_mm2', 'subcutis_area_mm2', 'stratcorn_area_mm2')
+head(tissue_areas)
+
+```
+
+```{r}
+info <- data.frame(colData(pb))
+info$anatomic_site <- make.names(info$anatomic_site)
+info$total_area_mm2 <- NULL
+info <- left_join(info, tissue_areas)
+
+
+neighborhood_areas <- read.csv("data/merfish/BAYSOR/neighborhood_analysis/neighborhood.metadata.csv") %>%
+   dplyr::select(sample_barcode, neighborhood, neighborhood_area, neighborhood_proportion, neighborhood_area_adjusted)
+# info <- left_join(info, neighborhood_areas)
+
+info <- data.frame(info)
+rownames(info) <- info$sample_barcode
+density <- (counts / info$total_area_mm)
+total.cells <- rowSums(counts)
+info$total.cells <- total.cells
+info$cell_density <- info$total.cells / info$total_area_mm / 100 # tx per 100um2
+info$total_tx <- info$lib_size
+```
+
+```{r}
+cobj <- crumblr(counts)
+```
+
+
+
+
+```{r}
+library(ComplexHeatmap)
+```
+
+```{r}
+neighborhoods <- levels(meta$neighborhood)
+neighborhood.colors <- pals::glasbey(n=length(neighborhoods))
+names(neighborhood.colors) <- neighborhoods
+
+
+library(tidyverse)
+library(Matrix)
+library(Seurat)
+library(SeuratObject)
+library(circlize)
+library(RColorBrewer)
+library(ggrepel)
+library(ggpubr)
+library(patchwork)
+library(ragg)
+library(ggrastr)
+library(paletteer)
+
+## functions
+
+compute_angle <- function(perc) {
+  angle = -1
+  if(perc < 0.25) # 1st q [90,0]
+    angle = 90 - (perc/0.25) * 90
+  else if(perc < 0.5) # 2nd q [0, -90]
+    angle = (perc-0.25) / 0.25 * -90
+  else if(perc < 0.75) # 3rd q [90, 0]
+    angle = 90 - ((perc-0.5) / 0.25 * 90)
+  else if(perc < 1.00) # last q [0, -90]
+    angle = ((perc -0.75)/0.25) * -90
+  # Or even more compact, but less readable
+  if(perc < 0.5) # 1st half [90, -90]
+    angle = (180 - (perc/0.5) * 180) - 90
+  else # 2nd half [90, -90]
+    angle = (90 - ((perc - 0.5)/0.5) * 180)
+  return(angle)
+}
+
+sites <- unique(colData(pb)$anatomic_site)
+
+## Neighborhood Composition Donut Plots
+donut_list <- list()
+for (site in sites){
+  df <- meta %>%
+    filter(anatomic_site == site) %>%
+    group_by(anatomic_site, neighborhood) %>%
+    summarise(no.cells = n()) %>%
+    ungroup()
+
+  sum_total_cells <- sum(df$no.cells)
+  firstLevel <- df %>% group_by(anatomic_site) %>% summarize(total.cells=sum(no.cells))
+
+  secondLevel  <- df %>%
+    group_by(neighborhood) %>%
+    summarize(no.cells=sum(no.cells)) %>%
+    mutate(neighborhood= reorder(neighborhood, no.cells),
+           pct.cells = no.cells / sum_total_cells) %>%
+    arrange(desc(pct.cells)) %>%
+    ungroup() %>%
+    mutate(running=cumsum(pct.cells), pos = running - pct.cells/2) %>%
+    group_by(1:n()) %>% # to compute row by row
+    mutate(angle=compute_angle((running - pct.cells/2) / 1)) %>%
+    ungroup()
+
+
+  donut_list[[site]] <- ggplot(firstLevel)  +
+    geom_bar(data=firstLevel, aes(x=1, y=1), fill='white', stat='identity') +
+    geom_bar(data = secondLevel, aes(x = 2, y = pct.cells, fill = neighborhood),
+             position = 'stack', stat = 'identity', color = 'black') +
+    # geom_text(data = secondLevel[secondLevel$pct.cells>0.01,],
+    #           aes(label = neighborhood.detailed, x = 3, y = pos), #, angle = angle),
+    #           position = 'identity', color = 'black') +
+    scale_fill_manual(values = neighborhood.colors) +
+    coord_polar('y') + theme_minimal() + spatial_theme + NoAxes() + labs(title = site)
+}
+
+anatomic_site.neighborhood_usage.donut_panel <- patchwork::wrap_plots(donut_list, nrow=2, guides = 'collect')
+```
+
+```{r fig.height=10, fig.width=16}
+# svglite::svglite("figures/merfish/BAYSOR/cellcharter/cellcharter_cluster.k_10/anatomic_site.neighborhood_usage.donut_plots.svg", height=10, width=16)
+anatomic_site.neighborhood_usage.donut_panel & NoLegend()
+# dev.off()
+```
+
+```{r}
+pca <- prcomp(t(cobj$E), scale. = TRUE, center=TRUE)
+# merge with metadata
+df_pca <- merge(pca$x, info, by = "row.names")
+```
+
+
+```{r fig.height=10, fig.width=25}
+# Plot PCA
+anatomic_site.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = anatomic_site) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+
+
+donor_id.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = donor_id) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+batch.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = batch) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+gene_panel.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = gene_panel) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+anatomic_site.pca_plot + donor_id.pca_plot + batch.pca_plot + gene_panel.pca_plot
+```
+
+```{r}
+info$shannon_diversity <- diversity(t(density), index = 'shannon')[,1]
+```
+
+```{r}
+ggplot(info) + 
+  aes(x=reorder(anatomic_site, shannon_diversity, FUN=median), y = shannon_diversity, fill=anatomic_site) + 
+  geom_boxplot() + theme_bw() + rotate_x_text()+ NoLegend() +
+  labs(x='Anatomic Site', y='Shannon Diversity Index (Neighborhoods)')
+```
+
+
+
+```{r}
+form <-  ~ donor_age + 
+  log1p(total_tx) +
+  total_area_mm2 + 
+  epidermis_area_mm2 + 
+  dermis_area_mm2 + 
+  subcutis_area_mm2  + 
+  (1|collection_type)+
+  (1|anatomic_site) + 
+  (1|donor_sex) +
+  (1|donor_id) +
+  (1|batch) 
+vp <- fitExtractVarPartModel(cobj, form, info)
+
+# Plot variance fractions
+fig.vp <- plotPercentBars(vp) + coord_flip()
+fig.vp
+```
+
+```{r}
+form <-  ~ donor_age + 
+    total_area_mm2  + 
+  (1|anatomic_site)  + 
+  (1|donor_id) + 
+  (1|batch) +
+  (1|donor_sex)
+
+vp <- fitExtractVarPartModel(cobj, form, info)
+
+
+meta$neighborhood <- factor(meta$neighborhood)
+form <-  ~ 0 + 
+  donor_age + 
+  total_area_mm2 + 
+  anatomic_site  +  
+  (1|batch) +
+  (1|donor_id) + 
+  (1|donor_sex)
+
+info$anatomic_site <- make.names(info$anatomic_site)
+sites <- unique(info$anatomic_site)
+
+contrast_list <- lapply(sites, function(site){
+
+  side1 <- paste0("anatomic_site", site)
+  side2 <- sites[sites != site]
+  len <- length(side2)
+
+  side2 <- paste0("(", paste(paste0("anatomic_site", side2), collapse=" + "), ") / ", len)
+
+  contr <- paste0(side1, " - ", side2)
+
+})
+names(contrast_list) <- sites
+
+L <- makeContrastsDream(form, info, contrasts = contrast_list)
+fit <- dream(cobj, form, info, L)
+fit <- eBayes(fit, robust = TRUE)
+
+resdf <- lapply(1:length(sites), function(x){
+  df <- data.frame(topTable(fit, number = Inf, coef = x, confint = TRUE))
+  df$anatomic_site <- sites[x]
+  df$neighborhood <- factor(rownames(df), levels = levels(meta$neighborhood))
+  return(df)
+}) %>% bind_rows()
+
+table(resdf$adj.P.Val < 0.05)
+table(resdf$anatomic_site, resdf$adj.P.Val < 0.05)
+```
+
+
+
+```{r}
+lfc.mat <- resdf %>%
+  dplyr::select(anatomic_site, neighborhood, logFC) %>%
+  pivot_wider(names_from = "neighborhood", values_from = "logFC") %>%
+  data.frame()
+rownames(lfc.mat) <- lfc.mat$anatomic_site
+lfc.mat$anatomic_site <- NULL
+
+lfc.mat <- lfc.mat[, make.names(levels(meta$neighborhood))]
+colnames(lfc.mat) <- levels(meta$neighborhood)
+
+p.mat <- resdf %>%
+  mutate(padj.star = gtools::stars.pval(adj.P.Val)) %>%## padj.star = gsub("\\.", "", gtools::stars.pval(adj.P.Val))) %>%
+  dplyr::select(anatomic_site, neighborhood, padj.star) %>%
+  pivot_wider(names_from = "neighborhood", values_from = "padj.star") %>%
+  data.frame()
+rownames(p.mat) <- p.mat$anatomic_site
+p.mat$anatomic_site <- NULL
+p.mat <- p.mat[, make.names(levels(meta$neighborhood))]
+colnames(p.mat) <- levels(meta$neighborhood)
+```
+
+
+
+```{r}
+set.seed(123)
+site.hist <- hclust(dist(as.matrix(lfc.mat)))
+site.dend <- as.dendrogram(site.hist)
+site.km <- factor(kmeans(lfc.mat, centers = 4, iter.max = 1000, nstart = 100)$cluster)
+
+ct.hist <- hclust(dist(as.matrix(t(lfc.mat))))
+ct.dend <- as.dendrogram(ct.hist)
+ct.km <- factor(kmeans(t(lfc.mat), centers = 2, iter.max = 1000, nstart = 100)$cluster)
+```
+
+
+```{r fig.height=7, fig.width=6}
+
+vpdf <- data.frame(vp)
+cols <- colnames(vpdf)
+vpdf$neighborhood <- factor(rownames(vpdf), levels = levels(meta$neighborhood))
+vpdf <- vpdf %>% pivot_longer(cols = cols, names_to='variable', values_to='value')
+vpdf$variable <- factor(vpdf$variable, levels = cols)
+color_map <- c(colorway::varibow(n=length(cols)-1), "gray80")
+names(color_map) <- cols
+
+bp = HeatmapAnnotation(var=anno_barplot(data.frame(vp), bar_width=1, gp = gpar(fill=color_map)),
+                       annotation_name_side = 'left',
+                       annotation_legend_param = Legend(at=names(color_map), legend_gp = gpar(fill = color_map))
+    )
+
+
+
+lgd = Legend(at=names(color_map), legend_gp = gpar(fill = color_map))
+
+
+hm = Heatmap(
+  as.matrix(lfc.mat), 
+  name = "logFC", 
+  width = ncol( as.matrix(lfc.mat))*unit(5, "mm"), 
+  height = nrow( as.matrix(lfc.mat))*unit(5, "mm"),
+  row_split = site.km,
+  column_split = ct.km,
+  column_dend_reorder = FALSE,
+  row_dend_reorder = FALSE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%s", p.mat[i, j]), x, y, gp = gpar(fontsize = 10))
+    },
+  top_annotation = bp,
+  row_names_side = "left",
+  column_dend_side = 'bottom',
+  column_names_side = "bottom",
+  column_title_side = "bottom"
+        )
+
+draw(hm, annotation_legend_list = list(lgd), merge_legend=TRUE)
+```
+```{r include=FALSE}
+svglite::svglite("figures/merfish/BAYSOR/differential_abundance/neighborhoods.all_samples.compartment_areas_as_terms.crumblr.diffabundance.summary_panel.clustered.svg", height=7, width=6)
+draw(hm, annotation_legend_list = list(lgd), merge_legend=TRUE)
+dev.off()
+```
+
+## Adjusted Crumblr PCA
+
+```{r}
+fit <- dream(cobj, form, info)
+adj_propmat <- variancePartition::residuals.MArrayLM2(fit, cobj$E)
+
+pca <- prcomp(t(adj_propmat), scale. = TRUE, center=TRUE)
+variance_proportions = round(summary(pca)$importance[2,]*100, digits=2)
+
+# merge with metadata
+df_pca <- merge(pca$x, info, by = "row.names")
+set.seed(12345)
+umap <- uwot::umap(t(adj_propmat), min_dist=0.1, n_neighbors = 10, seed = 12345)
+colnames(umap) <- c("UMAP_1", 'UMAP_2')
+df_umap <- merge(umap, info, by = "row.names")
+
+adj_propmat2 <- t(adj_propmat)
+```
+
+
+
+```{r}
+ggplot(df_pca) +
+  aes(x = PC1, y = PC2, 
+      color = site_short) +
+  geom_point(size = 5) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  labs(x = paste0("PC1: ", variance_proportions[1], "%"),
+       y = paste0("PC2: ", variance_proportions[2], "%")) +
+  scale_color_paletteer_d("Polychrome::light")
+
+```
+```{r}
+ggplot(df_umap) +
+  aes(x = UMAP_1, y = UMAP_2, 
+      color = site_short) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  scale_color_paletteer_d("Polychrome::light") +
+  theme
+
+
+ggplot(df_umap) +
+  aes(x = UMAP_1, y = UMAP_2, 
+      color = donor_id) +
+  geom_point(size = 5) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  scale_color_paletteer_d("pals::polychrome")
+
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, color = gene_panel) +
+  geom_point(stroke=2) +
+  theme_classic() +
+  theme(aspect.ratio = 1) 
+
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, color = collection_source) +
+  geom_point(stroke=2) +
+  theme_classic() +
+  theme(aspect.ratio = 1) 
+
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, color = batch, shape = gene_panel) +
+  geom_point(stroke=2) +
+  theme_classic() + 
+  theme(aspect.ratio = 1) +
+  scale_shape_manual(values = c(4,1)) +
+  scale_color_paletteer_d('pals::polychrome')
+
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, 
+      fill = shannon_diversity, 
+      size = cell_density) +
+  geom_point(shape=21) +
+  viridis::scale_fill_viridis(option="A") +
+  theme_classic() +
+  theme(aspect.ratio = 1) + theme
+
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, 
+      color=dermis_area_mm2) +
+  geom_point() +
+  viridis::scale_color_viridis(option="A") +
+  theme_classic() +
+  theme(aspect.ratio = 1) + theme
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, 
+      color=epidermis_area_mm2) +
+  geom_point() +
+  viridis::scale_color_viridis(option="A") +
+  theme_classic() +
+  theme(aspect.ratio = 1) + theme
+ggplot(df_umap) +
+  aes(UMAP_1, UMAP_2, 
+      color=subcutis_area_mm2) +
+  geom_point() +
+  viridis::scale_color_viridis(option="A") +
+  theme_classic() +
+  theme(aspect.ratio = 1) + theme
+```
+
+
+
+## Adjusted CLR boxplots
+
+```{r}
+adj_clr_long <- cbind(info, t(adj_propmat)) %>% 
+  pivot_longer(cols=colnames(t(adj_propmat)), names_to = 'neighborhood', values_to='Adj.CLR') %>%
+  mutate(neighborhood = factor(neighborhood, levels=neighborhoods))
+```
+
+```{r fig.height=7.5, fig.width=5}
+clr_boxplots <- ggplot(adj_clr_long) +
+  aes(x = site_short, y = Adj.CLR, color=site_short) + 
+  geom_quasirandom() +
+  geom_boxplot(aes(color=NULL), alpha=0, outliers = FALSE, show.legend=FALSE) +
+  theme_bw() + theme +
+  facet_wrap(~ neighborhood, scales='free_y', nrow=5) +
+  rotate_x_text() +
+  scale_color_paletteer_d('Polychrome::light', name=NULL) +
+  labs(x=NULL, y = "Adj. CLR") 
+
+# svglite::svglite("figures/merfish/BAYSOR/differential_abundance/FigS4D_AdjCLR_Boxplots.svg", height=7.5, width = 16)
+# clr_boxplots
+# dev.off()
+
+clr_boxplots
+```
+
+```{r fig.height=7.5, fig.width=15}
+clr_boxplots <- ggplot(adj_clr_long) +
+  aes(x = neighborhood, y = Adj.CLR, color=neighborhood) + 
+  geom_quasirandom() +
+  geom_boxplot(aes(color=NULL), alpha=0, outliers = FALSE, show.legend=FALSE) +
+  theme_bw() + theme +
+  facet_wrap(~ site_short, scales='free_y', nrow=2) +
+  rotate_x_text() +
+  scale_color_paletteer_d('Polychrome::light', name=NULL) +
+  labs(x=NULL, y = "Adj. CLR") 
+
+# svglite::svglite("figures/merfish/BAYSOR/differential_abundance/FigS4D_AdjCLR_Boxplots.svg", height=7.5, width = 16)
+# clr_boxplots
+# dev.off()
+
+clr_boxplots
+```
+## Pairwise CLR correlations
+
+```{r}
+library(corrplot)
+```
+
+```{r fig.height=5, fig.width=5}
+cor.rmat <- cor(adj_propmat2, method='spearman')
+cor.pmat <- cor.mtest(adj_propmat2, method='spearman')$p
+cor.pstar <- gsub("\\.", "", gtools::stars.pval(cor.pmat))
+
+## outline the cells that are significant (P < 0.05)
+hm <- Heatmap(cor.rmat, name='Spearman',   
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          if (cor.pmat[i, j] < 0.05){
+            grid.rect(x = x, y = y, width = width, height = height, 
+            gp = gpar(col = "black", fill = NA))
+          }
+        },
+        width = ncol( as.matrix(cor.rmat))*unit(5, "mm"), 
+        height = nrow( as.matrix(cor.rmat))*unit(5, "mm")
+        )
+
+
+svglite::svglite("figures/merfish/BAYSOR/differential_abundance/Fig5_Neighborhoods_AdjCLR_PairwiseCorrelation_Heatmap.svg", height=5, width=5)
+draw(hm)
+dev.off()
+
+draw(hm)
+```
+
+
+### Correlation of Neighborhoods with Epidermal Thickness
+
+
+```{r}
+thicknessdf <- readRDS("data/histology/results/qupath_summary_wide.RDS")  %>% 
+  mutate(sample_barcode = paste(donor_id, "SKIN_NS", site_id, tissue_replicate, sep='_')) %>%
+  dplyr::select(-anatomic_site)
+```
+
+
+### raw proportions
+
+```{r}
+propmat <- counts/rowSums(counts)
+```
+
+
+```{r}
+cordf.all <- cbind(info[, c("sample_barcode", "anatomic_site", 'donor_id')], propmat) %>%
+  inner_join(thicknessdf) 
+```
+
+
+```{r}
+cordf <- cordf.all
+rownames(cordf) <- cordf$sample_barcode
+cordf$sample_barcode <- NULL
+sample_table <- info %>% dplyr::select(donor_id, sample_barcode, anatomic_site) %>% unique()
+prop.table <- cordf.all %>% inner_join(sample_table)
+
+nosole <- prop.table[prop.table$anatomic_site != 'Sole',]
+noscalpnosole <- prop.table[! prop.table$anatomic_site %in% c('Sole', 'Cen_Scalp', 'Occ_Scalp'),]
+
+data_list <- list(ALL=prop.table, WITHOUT_SOLE=nosole, WITHOUT_SCALP_OR_SOLE=noscalpnosole)
+```
+
+
+```{r}
+thickness.cols <- c("epidermis", "stratum.corneum", "total_thickness")
+cell.cols <- neighborhoods
+
+
+correlationdf <- lapply(names(data_list), function(condition){
+  df <- data_list[[condition]]
+  
+  resdf <- lapply(thickness.cols, function(thickness){
+    # print(thickness)
+
+    spearmandf <- lapply(cell.cols, function(nhood){
+     #  print(celltype)
+      res <- cor.test((df[, thickness]), df[, nhood], method = 'spearman', exact=TRUE) %>%
+        broom::tidy() %>%
+        mutate(condition = condition,
+               neighborhood = nhood,
+               measurement = thickness,
+               spearman.rho = estimate,
+               spearman.pval = p.value,
+               spearman.padj = p.adjust(p.value, method = "BH")
+               ) %>%
+        dplyr::select(condition, neighborhood, measurement, spearman.rho, spearman.pval, spearman.padj) %>%
+        unique() %>%
+        data.frame()
+      return(res)
+    }) %>% bind_rows()
+
+      pearsondf <- lapply(cell.cols, function(nhood){
+        # print(celltype)
+        
+        res <- cor.test((df[, thickness]), df[, nhood], method = 'pearson', exact=TRUE) %>%
+          broom::tidy() %>%
+          mutate(condition = condition,
+                 neighborhood = nhood,
+                 measurement = thickness,
+                 pearson.r2 = estimate,
+                 pearson.pval = p.value,
+                 pearson.padj = p.adjust(p.value, method = "BH")
+          ) %>%
+          dplyr::select(condition, neighborhood, measurement, pearson.r2, pearson.pval, pearson.padj) %>%
+          unique() %>%
+          data.frame()
+        return(res)
+      }) %>%
+        bind_rows()
+      
+      res <- inner_join(spearmandf, pearsondf)
+      return(res)
+
+
+      }) %>% bind_rows()
+
+  return(resdf)
+
+}) %>% bind_rows() %>%
+  mutate(
+         pearson.padj.star = gtools::stars.pval(pearson.padj),
+         spearman.padj.star = gtools::stars.pval(spearman.padj),
+         pearson.pval.star = gtools::stars.pval(pearson.pval),
+         spearman.pval.star = gtools::stars.pval(spearman.pval)
+  )
+```
+
+```{r fig.height=4, fig.width=8}
+corplot_thickness <- ((ggplot(correlationdf) +
+                      aes(x = measurement, y = neighborhood, fill = spearman.rho, label = spearman.padj.star) +
+                      geom_tile() + geom_text() +
+                      theme_classic() + theme + rotate_x_text(angle=45) +
+                      scale_fill_gradientn(colors = c("blue", "white", 'red'), limits = c(-1, 1)) +
+                      facet_wrap(~factor(condition, levels = names(data_list)), nrow=1) + labs(title = "Spearman", x = NULL, y = NULL) ) |
+                     (ggplot(correlationdf) +
+                        aes(x = measurement, y = neighborhood, fill = pearson.r2, label = pearson.padj.star) +
+                        geom_tile() + geom_text() +
+                        theme_classic() + theme +rotate_x_text(angle=45) +
+                        scale_fill_gradientn(colors = c("blue", "white", 'red'), limits = c(-1, 1)) +
+                        facet_wrap(~factor(condition, levels = names(data_list)), nrow=1) + labs(title = "Pearson", x = NULL, y = NULL))) +
+  plot_layout(guides='collect', axes='collect')
+
+corplot_thickness
+```
+
+
+
+
+### Adjusted CLRs
+
+
+```{r}
+cordf.all <- cbind(info[, c("sample_barcode", "anatomic_site", 'donor_id')], adj_propmat2) %>%
+  inner_join(thicknessdf) 
+```
+
+
+```{r}
+cordf <- cordf.all
+rownames(cordf) <- cordf$sample_barcode
+cordf$sample_barcode <- NULL
+sample_table <- info %>% dplyr::select(donor_id, sample_barcode, anatomic_site) %>% unique()
+prop.table <- cordf.all %>% inner_join(sample_table)
+
+nosole <- prop.table[prop.table$anatomic_site != 'Sole',]
+noscalpnosole <- prop.table[! prop.table$anatomic_site %in% c('Sole', 'Cen_Scalp', 'Occ_Scalp'),]
+
+data_list <- list(ALL=prop.table, WITHOUT_SOLE=nosole, WITHOUT_SCALP_OR_SOLE=noscalpnosole)
+```
+
+
+```{r}
+thickness.cols <- c("epidermis", "stratum.corneum", "total_thickness")
+cell.cols <- neighborhoods
+
+
+correlationdf <- lapply(names(data_list), function(condition){
+  df <- data_list[[condition]]
+  
+  resdf <- lapply(thickness.cols, function(thickness){
+    # print(thickness)
+
+    spearmandf <- lapply(cell.cols, function(nhood){
+     #  print(celltype)
+      res <- cor.test(log10(df[, thickness]), df[, nhood], method = 'spearman', exact=TRUE) %>%
+        broom::tidy() %>%
+        mutate(condition = condition,
+               neighborhood = nhood,
+               measurement = thickness,
+               spearman.rho = estimate,
+               spearman.pval = p.value,
+               spearman.padj = p.adjust(p.value, method = "BH")
+               ) %>%
+        dplyr::select(condition, neighborhood, measurement, spearman.rho, spearman.pval, spearman.padj) %>%
+        unique() %>%
+        data.frame()
+      return(res)
+    }) %>% bind_rows()
+
+      pearsondf <- lapply(cell.cols, function(nhood){
+        # print(celltype)
+        
+        res <- cor.test(log10(df[, thickness]), df[, nhood], method = 'pearson', exact=TRUE) %>%
+          broom::tidy() %>%
+          mutate(condition = condition,
+                 neighborhood = nhood,
+                 measurement = thickness,
+                 pearson.r2 = estimate,
+                 pearson.pval = p.value,
+                 pearson.padj = p.adjust(p.value, method = "BH")
+          ) %>%
+          dplyr::select(condition, neighborhood, measurement, pearson.r2, pearson.pval, pearson.padj) %>%
+          unique() %>%
+          data.frame()
+        return(res)
+      }) %>%
+        bind_rows()
+      
+      res <- inner_join(spearmandf, pearsondf)
+      return(res)
+
+
+      }) %>% bind_rows()
+
+  return(resdf)
+
+}) %>% bind_rows() %>%
+  mutate(
+         pearson.padj.star = gtools::stars.pval(pearson.padj),
+         spearman.padj.star = gtools::stars.pval(spearman.padj),
+         pearson.pval.star = gtools::stars.pval(pearson.pval),
+         spearman.pval.star = gtools::stars.pval(spearman.pval)
+  )
+```
+
+```{r fig.height=4, fig.width=8}
+corplot_thickness <- ((ggplot(correlationdf) +
+                      aes(x = measurement, y = neighborhood, fill = spearman.rho, label = spearman.padj.star) +
+                      geom_tile() + geom_text() +
+                      theme_classic() + theme + rotate_x_text(angle=45) +
+                      scale_fill_gradientn(colors = c("blue", "white", 'red'), limits = c(-1, 1)) +
+                      facet_wrap(~factor(condition, levels = names(data_list)), nrow=1) + labs(title = "Spearman", x = NULL, y = NULL) ) |
+                     (ggplot(correlationdf) +
+                        aes(x = measurement, y = neighborhood, fill = pearson.r2, label = pearson.padj.star) +
+                        geom_tile() + geom_text() +
+                        theme_classic() + theme +rotate_x_text(angle=45) +
+                        scale_fill_gradientn(colors = c("blue", "white", 'red'), limits = c(-1, 1)) +
+                        facet_wrap(~factor(condition, levels = names(data_list)), nrow=1) + labs(title = "Pearson", x = NULL, y = NULL))) +
+  plot_layout(guides='collect', axes='collect')
+
+corplot_thickness
+```
+
+
+
+## By Cell Types
+
+
+
+Now pseudobulk by sample-neighborhood for cell types
+
+```{r}
+obj <- subset(obj, donor_id %in% c("D165", "D077","D107", "D082", "D151", "D145", "D149"))
+obj$sample_neighborhood <- paste0(obj$sample_barcode, "_", obj$neighborhood)
+```
+
+
+```{r}
+sce <- SingleCellExperiment(assays = list(counts = obj[['RNA']]$counts), colData = obj@meta.data)
+
+pb <- aggregateToPseudoBulk(sce,
+                            assay = "counts",
+                            cluster_id = "cell_type.detailed",
+                            sample_id = "sample_neighborhood",
+                            verbose = FALSE)
+assayNames(pb)
+pb$sample_neighborhood <- colnames(pb)
+counts <- cellCounts(pb)
+colnames(counts)[42] <- "Naive T"
+```
+
+First determine which cell types should be associated with each neighborhood primarily
+
+
+
+```{r}
+info <- data.frame(colData(pb)) 
+info$total_area_mm2 <- NULL
+# info <- info %>% inner_join(neighborhood_areas)
+# info$tota_area_mm2 <- NULL
+info <- info %>% inner_join(tissue_areas)
+rownames(info) <- info$sample_neighborhood
+counts <- counts[rownames(info),]
+info$anatomic_site <- make.names(info$anatomic_site)
+info$total.cells <- as.numeric(rowSums(counts))
+# info$neighborhood_density <- (info$total.cells/info$neighborhood_area)/100 # cells per 100 um2
+density <- (counts / info$neighborhood_area)/100 # make it cells per 100um2
+density[is.na(density)] <- 0
+info$shannon_diversity <- diversity(t(density), index = 'shannon')[,1]
+```
+
+
+
+
+```{r}
+neighborhood_assignments <- list(
+  "DEJ" = c("Papil Fib","Bas KC","Melano"),
+  "PERIVASC-I" = c("CCR7+ DC","CD4+ Treg","Naive T","CD8+ Tc","CD4+ Th","Mast","CD1C+ DC",
+                   "CLEC9A+ DC","Perivasc Fib I","Perivasc Fib II", "VEC","Peri","HEC","Plasma","Cyc Imm","Mac","Mono"),
+  "DIFF-IFE" = c("Grn KC","Spn KC I","Bas KC","Cyc KC","LC","Spn KC II"),
+  "PERIVASC-II" = c("SM","LEC","Schwann","Retic Fib III","Peri","VEC","HEC","Perivasc Fib I","Perivasc Fib II"),
+  "STROMA" =  c("Retic Fib II","Retic Fib I","Mac"),
+  "UPPER-HF" = c("Melano","Bas KC","Cyc KC","LC","Spn KC II","Bas Inf","Diff Inf"),
+  "ECCRINE" = c("Ecc Myoepi","Ecc Duct","Ecc Gland"),
+   "SEB-GLND" = c("Bas Seb","Diff Seb"),
+  "SUBCUTIS" = c("Adipo","Mono","Perivasc Fib I","Perivasc Fib II"),
+  "LOWER-HF"= c("Bulge","ORS Basal","ORS Suprabasal","IRS/HS","Melano","DP","DS")
+)
+```
+
+
+
+
+
+```{r}
+neighborhood.colors <- pals::glasbey(n=length(levels(obj@meta.data$neighborhood)))
+names(neighborhood.colors) <- levels(obj@meta.data$neighborhood)
+```
+
+```{r}
+# svglite::svglite("figures/merfish/BAYSOR/shannon_diversity/celltype_diversity_per_neighborhood.svg", height=5, width=7)
+ggplot(info) +
+  aes(x = reorder(neighborhood, shannon_diversity, median), 
+      y = shannon_diversity, fill = neighborhood) + 
+  geom_violin(scale = 'width') +
+  geom_boxplot(width = 0.05, aes(fill=NULL)) + 
+  geom_line(aes(x = as.numeric(reorder(neighborhood, shannon_diversity, median)), 
+                group = sample_barcode), alpha=0.1) +
+  geom_violin(alpha=0.5, scale = 'width') + 
+  geom_boxplot(width = 0.05, aes(fill=NULL)) + 
+  theme_bw() + scale_fill_manual(values=neighborhood.colors) + 
+  NoLegend() + labs(x='Neighborhood', y='Neighborhood Diversity')
+# dev.off()
+```
+
+```{r}
+cobj <- crumblr(counts)
+```
+
+
+```{r fig.height=10, fig.width=25}
+pca <- prcomp(t(cobj$E), scale. = TRUE, center=TRUE)
+# merge with metadata
+df_pca <- merge(pca$x, info, by = "row.names")
+
+
+# Plot PCA
+anatomic_site.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = anatomic_site) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+
+donor_id.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = donor_id) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+batch.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = batch) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+gene_panel.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = gene_panel) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+neighborhood.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = neighborhood) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+
+donor_sex.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = donor_sex) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+anatomic_site.pca_plot + donor_id.pca_plot + 
+  batch.pca_plot + gene_panel.pca_plot + 
+  neighborhood.pca_plot + donor_sex.pca_plot
+```
+
+```{r fig.height=5, fig.width=5}
+# svglite::svglite("figures/merfish/BAYSOR/shannon_diversity/celltype_diversity_per_neighborhood_densityadj_na2zero.svg", height=5, width=5)
+ggplot(info) +
+  aes(x = reorder(neighborhood, shannon_diversity, median, na.rm=TRUE), 
+      y = shannon_diversity, fill = neighborhood) + 
+  geom_violin(scale = 'width') +
+  geom_boxplot(width = 0.05, aes(fill=NULL)) + 
+  geom_line(aes(x = as.numeric(reorder(neighborhood, shannon_diversity, median, na.rm=TRUE)),
+                group = sample_barcode), alpha=0.1) +
+  geom_violin(alpha=0.5, scale = 'width') +
+  geom_boxplot(width = 0.05, aes(fill=NULL)) +
+  theme_bw() + scale_fill_manual(values=neighborhood.colors) + 
+  NoLegend() + labs(x='Neighborhood', y='Neighborhood Diversity')
+# dev.off()
+```
+
+```{r}
+info$neighborhood_density[is.na(info$neighborhood_density)] <- 0
+info$neighborhood_area[is.na(info$neighborhood_area)] <- 0
+```
+
+
+```{r fig.height=10, fig.width=5}
+form <-  ~ log1p(total.cells) + 
+  log1p(tx_count.total) +
+  epidermis_area_mm2 +
+  dermis_area_mm2 +
+  subcutis_area_mm2 +
+  neighborhood_area + 
+  donor_age + 
+  (1|anatomic_site) + 
+  (1|donor_sex) + 
+  (1|donor_id) + 
+  (1|batch) +
+  (1|sample_barcode) +
+  (1|neighborhood)
+
+vp <- fitExtractVarPartModel(cobj, form, info)
+plotPercentBars(vp) + coord_flip() 
+```
+
+
+```{r}
+form <-  ~ log1p(tx_count.total) +
+  log1p(neighborhood_density) +
+  neighborhood_area + 
+  epidermis_area_mm2 +
+  subcutis_area_mm2 +
+  dermis_area_mm2 +
+  donor_age +  
+  (1|anatomic_site) + 
+  (1|donor_sex) + 
+  (1|donor_id) + 
+  (1|batch)
+
+vp.list <- lapply(neighborhoods, function(nhood){
+  print(nhood)
+  mm <- info[info$neighborhood == nhood,]
+  cc <- cobj[neighborhood_assignments[[nhood]], rownames(mm)]
+  vp <- fitExtractVarPartModel(cc, form, mm)
+  return(vp)
+})
+names(vp.list) <- neighborhoods
+
+# Plot variance fractions
+vp.fig.list <- lapply(neighborhoods, function(nhood){
+  vp <- vp.list[[nhood]]
+  plotPercentBars(vp) + labs(title = nhood) 
+})
+```
+
+```{r fig.height=5, fig.width=25}
+patchwork::wrap_plots(plotlist = vp.fig.list, guides = 'collect', nrow=1, axes = 'collect')
+```
+
+```{r}
+form <-  ~ 0 +total_area_mm2+ donor_age  + anatomic_site + (1|donor_id) + (1|batch)
+```
+
+```{r}
+fit.list <- lapply(neighborhoods, function(nhood){
+  print(nhood)
+  mm <- info[info$neighborhood == nhood,]
+  
+  sites <- unique(mm$anatomic_site)
+  
+  contrast_list <- lapply(sites, function(site){
+  
+    side1 <- paste0("anatomic_site", site)
+    side2 <- sites[sites != site]
+    len <- length(side2)
+  
+    side2 <- paste0("(", paste(paste0("anatomic_site", side2), collapse=" + "), ") / ", len)
+  
+    contr <- paste0(side1, " - ", side2)
+  
+  })
+  names(contrast_list) <- sites
+  
+  cc <- cobj[neighborhood_assignments[[nhood]], rownames(mm)]
+  L <- makeContrastsDream(form, mm, contrasts = contrast_list)
+  fit <- dream(cc, form, mm, L)
+  fit <- eBayes(fit)
+  return(fit)
+})
+names(fit.list) <- neighborhoods
+```
+
+
+
+```{r}
+res.list <- lapply(neighborhoods, function(nhood){
+  
+  fit <- fit.list[[nhood]]
+  sites <- rownames(fit$contrasts)[grepl('anatomic_site', rownames(fit$contrasts))]
+  sites <- gsub('anatomic_site', '', sites)
+  resdf <- lapply(1:length(sites), function(x){
+    df <- data.frame(topTable(fit, number = Inf, coef = x, confint = TRUE))
+    df$anatomic_site <- sites[x]
+    df$cell_type.detailed <- factor(rownames(df))
+    return(df)
+  }) %>% 
+    bind_rows() %>%
+    mutate(neighborhood = nhood)
+    
+  print(nhood)
+  print(table(resdf$adj.P.Val < 0.05))
+   print(table(resdf$anatomic_site, resdf$adj.P.Val < 0.05))
+  return(resdf)
+})
+names(res.list) <- neighborhoods
+```
+
+```{r}
+vpdflist <- lapply(neighborhoods, function(nhood){
+  mm <- info[info$neighborhood == nhood,]
+  cc <- cobj[neighborhood_assignments[[nhood]], rownames(mm)]
+  
+  form <-  ~ total_area_mm2 + donor_age + (1|anatomic_site) + (1|donor_id) + (1|batch)
+  
+  vp <- fitExtractVarPartModel(cc$E, form, mm)
+  vpdf <- data.frame(vp)
+  cols <- colnames(vpdf)
+  vpdf$cell_type.detailed <- factor(rownames(vpdf))
+  vpdf <- vpdf %>% pivot_longer(cols = cols, names_to='variable', values_to='variance_explained')
+  vpdf$variable <- factor(vpdf$variable, levels = cols)
+  vpdf$neighborhood <- nhood
+  return(vpdf)
+})
+names(vpdflist) <- neighborhoods
+vpdf <- vpdflist %>% bind_rows()
+write.csv(vpdf, file = "data/merfish/BAYSOR/differential_abundance/neighborhood_celltype_variancepartition_resultdf.csv")
+```
+
+
+```{r}
+resdf <- res.list %>% bind_rows()
+write.csv(resdf, file = "data/merfish/BAYSOR/differential_abundance/neighborhood_celltype.diffabundance.result_list.csv")
+```
+
+
+
+
+```{r fig.height=6, fig.width=25}
+library(ggpubr)
+library(patchwork)
+panel.list <- lapply(neighborhoods, function(nhood){
+  print(nhood)
+  
+  vpdf <- vpdflist[[nhood]]
+  cols <- as.character(unique(vpdf$variable))
+  vpdf$cell_type.detailed <- factor(vpdf$cell_type.detailed)
+  color_map <- c(colorway::varibow(n_colors = length(cols)-1), "gray80")
+  names(color_map) <- cols
+  
+  vplot <- ggplot(vpdf) + 
+    aes(x = cell_type.detailed, y=variance_explained, fill = variable) + 
+    geom_bar(stat='identity') + 
+    scale_fill_manual(values = color_map, name = NULL) + 
+    theme_classic() + rotate_x_text() + 
+    labs(y = NULL, title = nhood) + 
+    scale_y_continuous(labels = scales::percent) 
+  
+  resdf <- res.list[[nhood]]
+  resdf$cell_type.detailed <- factor(resdf$cell_type.detailed)
+  heatmap <- ggplot(resdf) + 
+    aes(x = cell_type.detailed, y = anatomic_site, fill = logFC, label = gtools::stars.pval(adj.P.Val)) +
+    geom_tile()  +  labs(x=NULL, y=NULL) +
+    geom_text(aes(color=NULL), show.legend=FALSE) + 
+    theme_classic()+ rotate_x_text(angle=90) +
+    scale_fill_gradientn(colors = c("blue", "white", "red"), limits = c(-1.5, 1.5), oob = scales::squish)
+  
+  
+  crumblr_panel <- (vplot / heatmap) + plot_layout(axes="collect_x", heights = c(0.5,1.5))
+  return(crumblr_panel)
+  })
+names(panel.list) <- neighborhoods
+neighborhood_assignments <- neighborhood_assignments[neighborhoods]
+# pdf("figures/merfish/BAYSOR/differential_abundance/per_neighborhood.anatomic_site.celltype.crumblr.panels.pdf", height=8, width=15)
+patchwork::wrap_plots(panel.list, nrow=1, widths = sapply(neighborhood_assignments, length), axes='collect', guides='collect')
+# dev.off()
+```

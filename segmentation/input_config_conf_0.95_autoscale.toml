@@ -1,0 +1,18 @@
+[data]
+x = "global_x"
+y = "global_y"
+gene = "gene"
+exclude_genes = "Blank-*"
+force_2d = true
+min_molecules_per_gene = 1
+min_molecules_per_cell = 3
+min_molecules_per_segment = 3
+confidence_nn_id = 6
+
+[segmentation]
+scale = -1
+scale_std = "50%"
+prior_segmentation_confidence = 0.95
+n_clusters = 8
+iters = 500
+n_cells_init = 0

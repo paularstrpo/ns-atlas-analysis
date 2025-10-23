@@ -1,0 +1,259 @@
+---
+title: "Visium Crumblr"
+author: "Paula Restrepo"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    number_sections: yes
+    keep_md: true
+    highlight: tango
+    theme: journal
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(circlize)
+library(RColorBrewer)
+library(paletteer)
+library(ggrepel)
+library(ggbeeswarm)
+library(ggpubr)
+library(patchwork)
+library(Seurat)
+library(Matrix)
+library(tidyverse)
+library(DirichletReg)
+library(edgeR)
+library(limma)
+library(variancePartition)
+library(dreamlet)
+library(crumblr)
+library(SingleCellExperiment)
+library(vegan)
+library(microbiome)
+
+
+knitr::opts_chunk$set(
+  echo = TRUE, progress = FALSE, collapse = TRUE, warning = FALSE, message = FALSE,
+  dev = c("svglite", "png"), dpi = 300, fig.path = 'figures/visium/crumblr/harmony.snn_res.0.4/'
+  )
+# Plotting Parameters
+
+## ggplot themes
+theme <- theme(
+  legend.position = 'right',
+  text = element_text(color = 'black', size = 10),
+  title = element_text(face = 'bold', size = 12, color = 'black', hjust = 0.5),
+  strip.background = element_rect(fill = 'black', color = 'black'),
+  strip.text = element_text(color = 'white', face = 'bold', size = 12),
+  plot.title = element_text(size = 14, color = 'black', face = 'bold', hjust = 0.5),
+  panel.background = element_rect(color = 'black', fill = NA),
+  plot.background = element_blank(), 
+  legend.background = element_blank(), 
+  legend.key = element_blank()
+  )
+
+spatial_theme <- theme(
+  rect = element_blank(),
+  line = element_blank(),
+  text = element_text(color = 'black', size = 10),
+  title = element_text(face = 'bold', size = 12, color = 'black', hjust = 0.5),
+  strip.background = element_rect(fill = 'black', color = 'black'),
+  strip.text = element_text(color = 'white', face = 'bold', size = 12),
+  plot.title = element_text(size = 14, color = 'black', face = 'bold', hjust = 0.5),
+  axis.text = element_blank()
+  )
+```
+
+```{r}
+sce <- qs::qread("data/visium/seurat_objects/pan-skin_merged.visium_data.harmony_integrated.sce_object.QS")
+meta <- colData(sce)
+```
+
+
+```{r}
+pb <- aggregateToPseudoBulk(sce,
+                            assay = "counts",
+                            cluster_id = "harmony.snn_res.0.4",
+                            sample_id = "sample_id",
+                            verbose = FALSE)
+assayNames(pb)
+pb$sample_id <- colnames(pb)
+counts <- cellCounts(pb)
+info <- data.frame(colData(pb))
+cobj <- crumblr(counts)
+```
+
+```{r fig.height=10, fig.width=25}
+pca <- prcomp(t(standardize(cobj)), scale. = TRUE, center=TRUE)
+
+# merge with metadata
+df_pca <- merge(pca$x, info, by = "row.names")
+
+
+# Plot PCA
+study.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = study_id) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+
+donor_id.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = donor_id) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+tissue.pca_plot <- ggplot(df_pca) +
+  aes(PC1, PC2, color = tissue_type) +
+  geom_point(size = 3) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  xlab("PC1") +
+  ylab("PC2")
+
+
+ tissue.pca_plot+study.pca_plot + donor_id.pca_plot
+```
+
+```{r}
+form <-  ~ (1|study_id) + (1|tissue_type) + (1|donor_id)
+vp <- fitExtractVarPartModel(cobj, form, info)
+
+# Plot variance fractions
+fig.vp <- plotPercentBars(vp) + coord_flip()
+fig.vp
+```
+
+```{r}
+form <-  ~ 0 + tissue_type + (1|study_id) + (1|donor_id)
+conditions <-  c("SCC", "BCC", "PP", "AD", "HS")
+contrast_list <- list("tissue_typeSCC - tissue_typeNS", "tissue_typeBCC - tissue_typeNS", "tissue_typePP - tissue_typeNS", "tissue_typeAD - tissue_typeNS", "tissue_typeHS - tissue_typeNS")
+names(contrast_list) <- conditions
+
+L <- makeContrastsDream(form, info, contrasts = contrast_list)
+fit <- dream(cobj, form, info, L)
+fit <- eBayes(fit, robust = TRUE)
+
+resdf <- lapply(1:length(conditions), function(x){
+  df <- data.frame(topTable(fit, number = Inf, coef = x, confint = TRUE))
+  df$tissue_type <- conditions[x]
+  df$harmony.snn_res.0.4 <- factor(rownames(df), levels = levels(meta$harmony.snn_res.0.4))
+  return(df)
+}) %>% bind_rows()
+
+table(resdf$adj.P.Val < 0.05)
+table(resdf$tissue_type, resdf$adj.P.Val < 0.05)
+```
+
+```{r fig.height=5, fig.width=15}
+library(ggpubr)
+heatmap <- ggplot(resdf) + 
+  aes(x = harmony.snn_res.0.4, y = tissue_type, fill = logFC,
+      label = gtools::stars.pval(adj.P.Val)) + geom_tile()  +
+  geom_text(aes(color=NULL), show.legend=FALSE) + 
+  theme_classic()+ rotate_x_text(angle=90) + 
+  scale_fill_gradientn(colors = c("blue", "white", "red"), limits = c(-1.5, 1.5), oob = scales::squish)
+
+vpdf <- data.frame(vp)
+cols <- colnames(vpdf)
+vpdf$harmony.snn_res.0.4 <- factor(rownames(vpdf), levels = levels(meta$harmony.snn_res.0.4))
+vpdf <- vpdf %>% pivot_longer(cols = cols, names_to='variable', values_to='value')
+vpdf$variable <- factor(vpdf$variable, levels = cols)
+color_map <- c("dodgerblue", 'maroon1', "goldenrod1",  "gray80")
+names(color_map) <- unique(vpdf$variable)
+
+vplot <- ggplot(vpdf) + 
+  aes(x = harmony.snn_res.0.4, y=value, fill = variable) + 
+  geom_bar(stat='identity') + 
+  scale_fill_manual(values = color_map, name = NULL) + 
+  theme_classic() + rotate_x_text() + 
+  labs(y = "Variance Explained (%)") + 
+  scale_y_continuous(labels = scales::percent)
+
+
+library(patchwork)
+crumblr_panel <- (vplot / heatmap) + plot_layout(axes="collect_x", heights = c(0.5,1.5))
+crumblr_panel
+```
+
+
+```{r}
+library(ComplexHeatmap)
+```
+
+```{r}
+lfc.mat <- resdf %>%
+  dplyr::select(tissue_type, harmony.snn_res.0.4, logFC) %>%
+  pivot_wider(names_from = "harmony.snn_res.0.4", values_from = "logFC") %>%
+  data.frame()
+rownames(lfc.mat) <- lfc.mat$tissue_type
+lfc.mat$tissue_type <- NULL
+lfc.mat <- lfc.mat[, make.names(levels(meta$harmony.snn_res.0.4))]
+colnames(lfc.mat) <- make.names(levels(meta$harmony.snn_res.0.4))
+
+p.mat <- resdf %>%
+  mutate(padj.star = gsub("\\.", "", gtools::stars.pval(adj.P.Val))) %>%
+  dplyr::select(tissue_type, harmony.snn_res.0.4, padj.star) %>%
+  pivot_wider(names_from = "harmony.snn_res.0.4", values_from = "padj.star") %>%
+  data.frame()
+rownames(p.mat) <- p.mat$tissue_type
+p.mat$tissue_type <- NULL
+p.mat <- p.mat[, make.names(levels(meta$harmony.snn_res.0.4))]
+colnames(p.mat) <- make.names(levels(meta$harmony.snn_res.0.4))
+```
+
+
+
+```{r eval=FALSE}
+set.seed(123)
+site.hist <- hclust(dist(as.matrix(lfc.mat)))
+site.dend <- as.dendrogram(site.hist)
+site.km <- factor(kmeans(lfc.mat, centers = 4, iter.max = 1000, nstart = 100)$cluster)
+
+ct.hist <- hclust(dist(as.matrix(t(lfc.mat))))
+ct.dend <- as.dendrogram(ct.hist)
+ct.km <- factor(kmeans(t(lfc.mat), centers = 5, iter.max = 1000, nstart = 100)$cluster)
+```
+
+
+```{r fig.height=5, fig.width=14}
+bp = HeatmapAnnotation(var=anno_barplot(data.frame(vp), bar_width=1, gp = gpar(fill=color_map)),
+                       annotation_name_side = 'left',
+                       annotation_legend_param = Legend(at=names(color_map), legend_gp = gpar(fill = color_map))
+    )
+
+
+
+lgd = Legend(at=names(color_map), legend_gp = gpar(fill = color_map))
+
+
+hm = Heatmap(
+  as.matrix(lfc.mat), 
+  name = "logFC", 
+  row_km = 2,
+  column_km = 4,
+  row_km_repeats = 100,
+  column_km_repeats=100,
+  # row_split = factor(site.km, levels=c(2,4,3,1)),
+  # column_split = factor(ct.km,levels=c(1,5,3,2,4)),
+  
+  column_dend_reorder = TRUE,
+  row_dend_reorder = TRUE,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%s", p.mat[i, j]), x, y, gp = gpar(fontsize = 10))
+    },
+  top_annotation = bp,
+  row_names_side = "left",
+  column_dend_side = 'bottom',
+  column_names_side = "bottom",
+  column_title_side = "bottom"
+        )
+
+draw(hm, annotation_legend_list = list(lgd), merge_legend=TRUE)
+```
