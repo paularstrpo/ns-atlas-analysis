@@ -6,13 +6,11 @@ This repository contains analysis code and notebooks for the publication entitle
 
 ## Data Availability
 
-**NS-Atlas Explorer:**  https://rstudio-connect.hpc.mssm.edu/humanskin-spatialcensus/
+**NS-Atlas Explorer:**  [The Human Spatial Skin Census](https://rstudio-connect.hpc.mssm.edu/humanskin-spatialcensus/)
 
-**Processed Data:** ()[]
+**Processed Data:** [Zenodo DOI: 10.5281/zenodo.16795569](10.5281/zenodo.16795569)
 
-**Transcripts Data:** ()[]
-
-**Imaging Data:** ()[]
+**Raw MERFISH and Imaging Data:** [EMBL-EBI BioImage Accession XXXX](XXXXX)
 
 ## Cite
 
