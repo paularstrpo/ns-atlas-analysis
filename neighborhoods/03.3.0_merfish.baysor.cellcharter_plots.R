@@ -69,7 +69,7 @@ metadf <- obj@meta.data
 root_path <- "figures/merfish/BAYSOR/cellcharter/"
 dir.create(root_path, showWarnings = FALSE, recursive = TRUE)
 
-maxima <- c(2, 3, 10)
+maxima <- c(3, 9,10, 11)
 res.cols <- paste0("cellcharter_cluster.k_", maxima)
 
 for (res in res.cols){
@@ -440,9 +440,10 @@ for (res in res.cols){
 }
 
 library(clustree)
+meta <- obj@meta.data
 meta$cellcharter_cluster.k_1 <- 0
-metadf <- meta[, c("cell_barcode", "sample_barcode", "cell_type.broad","cellcharter_cluster.k_1", "cellcharter_cluster.k_2", "cellcharter_cluster.k_3", "cellcharter_cluster.k_10")]
-treeplt <- clustree(metadf, prefix="cellcharter_cluster.k_", prop_filter=0.25)
+metadf <- meta[, c("cell_barcode", "sample_barcode", "cell_type.broad","cellcharter_cluster.k_1", "cellcharter_cluster.k_3", "cellcharter_cluster.k_10", "cellcharter_cluster.k_11")]
+treeplt <- clustree(metadf, prefix="cellcharter_cluster.k_", prop_filter=0.1)
 treeplt
 
 ## spatial highlight plots
@@ -490,3 +491,74 @@ for (res in res.cols){
 
   }
 }
+
+
+d165.postaur.obj <- subset(obj, subset = donor_id == "D165" & anatomic_site == "postauricular")
+d165.postaur.obj$spatial_1 <- d165.postaur.obj$center_x
+d165.postaur.obj$spatial_2 <- d165.postaur.obj$center_y
+### neighborhoods -- use postauricular
+df <- d165.postaur.obj@meta.data
+
+min1 <- min(df$spatial_1)
+min2 <- min(df$spatial_2)
+diff <- max((max(df$spatial_1)-min(df$spatial_1)), max(df$spatial_1)-min(df$spatial_1))
+
+
+## spatial highlight plots
+for (res in res.cols){
+
+  d165.postaur.obj$cellcharter_domain <- d165.postaur.obj@meta.data[, res]
+  metadf <- d165.postaur.obj@meta.data
+  metadf$cellcharter_domain <- metadf[, res]
+  cell_counts <- table(metadf$cellcharter_domain)
+
+  nhood.cols <- pals::glasbey(length(unique(d165.postaur.obj$cellcharter_domain)))
+  names(nhood.cols) <- 0:(length(unique(d165.postaur.obj$cellcharter_domain))-1)
+
+  reclust.meta <- metadf[, c("cell_barcode", 'sample_barcode', 'batch','spatial_1','spatial_2', 'cellcharter_domain')]
+  clusters <- levels(metadf$cellcharter_domain)
+
+
+
+  ## full neighborhood spatial plot
+  neighborhood.spatial_plot <- ggplot(metadf) +
+    aes(x = spatial_1, y = spatial_2, color = cellcharter_domain) +
+    geom_point() +
+    theme_classic() +  spatial_theme + coord_fixed() +
+    scale_color_manual(values = nhood.cols) +
+    annotate('segment', x = min1-100, y = min2-100, xend = min1 + 1000 - 100, yend = min2-100,
+             color = 'black', linewidth = 1.5 , lineend='square') +
+    theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+    NoLegend() + NoAxes()
+
+  svglite::svglite(paste0("figures/merfish/BAYSOR/cellcharter/", res,".D165_postauricular.spatial.svg"), height=8, width=8)
+  print(neighborhood.spatial_plot)
+  dev.off()
+
+  # d165 postaur highlight plot
+  ## panel with spatial highlights for each neighborhood
+  neighborhood.highlight.pltlist <- lapply(clusters, function(cluster){
+    cells <- colnames(d165.postaur.obj)[d165.postaur.obj$cellcharter_domain == cluster]
+
+    DimPlot(d165.postaur.obj, group.by = res,
+            cols.highlight = c(nhood.cols[cluster]),
+            cells.highlight = cells,
+            reduction = 'spatial', pt.size = 0.5, sizes.highlight = 0.5) +
+      spatial_theme + theme + NoAxes() + coord_fixed() + NoLegend() + labs(title = cluster) +
+      annotate('segment', x = min1-100, y = min2-100, xend = min1 + 1000 - 100, yend = min2-100,
+               color = 'black', linewidth = 1.5 , lineend='square')
+  })
+
+  neighborhood.highlight.spatial_panel <- cowplot::plot_grid(plotlist = neighborhood.highlight.pltlist, nrow=1)
+  file_prefix = paste0("figures/merfish/BAYSOR/cellcharter/D165_postauric_cellcharter_", res)
+
+  png(paste0(file_prefix, ".png"), height=15, width=35, units = 'in', res = 300)
+  print(neighborhood.highlight.spatial_panel)
+  dev.off()
+
+  svglite::svglite(paste0(file_prefix, ".svg"), height=15, width=35)
+  print(neighborhood.highlight.spatial_panel)
+  dev.off()
+
+}
+
