@@ -4,6 +4,7 @@ _[Preprint out at Biorxiv](https://www.biorxiv.org/content/10.1101/2025.09.22.67
 
 This repository contains analysis code and notebooks for the publication entitled _"A single-cell spatial transcriptomic census of human skin anatomy"_
 
+
 ## Data Availability
 
 **NS-Atlas Explorer:**  [The Human Spatial Skin Census](https://rstudio-connect.hpc.mssm.edu/humanskin-spatialcensus/)
@@ -11,6 +12,10 @@ This repository contains analysis code and notebooks for the publication entitle
 **Processed Data:** [Zenodo DOI: 10.5281/zenodo.16795569](10.5281/zenodo.16795569) (To be made available upon publication)
 
 **Raw MERFISH and Imaging Data:** [EMBL-EBI BioImage Accession S-BIAD2376](https://www.ebi.ac.uk/biostudies/bioimages/studies/S-BIAD2376) (To be made available upon publication)
+
+
+## Instructions for use
+The scripts enclosed within use existing software and methods, and are provided to enable reproduction of computational analyses in the manuscript. System requirements and dependencies are provided in the conda environment yaml file. 
 
 ## Cite
 
