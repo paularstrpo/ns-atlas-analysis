@@ -20,7 +20,9 @@ The scripts enclosed within use existing software and methods, and are provided 
 ## Cite
 
 **Publication**
+
 Paula Restrepo, Alexis Wilder, Aubrey Houser, Harkirat Singh Sandhu, Angie Ramirez, M. Grace Hren, Raman Gill, Abiha Kazmi, Larry Chen, Alexandra Nigro, Ichiro Imanishi, Deniz Demircioglu, Dan Hasson, Alan Soto, Stephanie McQuillan, Edgar Gonzalez-Kozlova, Rachel Brody, Benjamin Ungar, Maria Kasper, Phillip Torina, Jesse M. Lewin, Sacha Gnjatic, Sai Ma, Andrew L. Ji. A single-cell spatial transcriptomic census of human skin anatomy. Nature Genetics. 2025.
+
 **Preprint:**
 
 Paula Restrepo, Alexis Wilder, Aubrey Houser, Angie Ramirez, M. Grace Hren, Raman Gill, Abiha Kazmi, Larry Chen, Deniz Demircioglu, Dan Hasson, Alan Soto, Stephanie McQuillan, Edgar Gonzalez-Kozlova, Rachel Brody, Benjamin Ungar, Maria Kasper, Phillip Torina, Jesse M. Lewin, Sacha Gnjatic, Sai Ma, Andrew L. Ji. A single-cell spatial transcriptomic census of human skin anatomy. bioRxiv 2025.09.22.676865; doi: https://doi.org/10.1101/2025.09.22.676865
