@@ -1,9 +1,10 @@
 # A single-cell spatial transcriptomic census of human skin anatomy
 
-_[Preprint out at Biorxiv](https://www.biorxiv.org/content/10.1101/2025.09.22.676865v1.full)!_
-
 This repository contains analysis code and notebooks for the publication entitled _"A single-cell spatial transcriptomic census of human skin anatomy"_ by Restrepo et al in _Nature Genetics_
 
+_[Read the paper in Nature Genetics!](https://www.nature.com/articles/s41588-026-02552-8)_
+
+_[Preprint on Biorxiv](https://www.biorxiv.org/content/10.1101/2025.09.22.676865v1.full)!_
 
 ## Data Availability
 
@@ -21,7 +22,7 @@ The scripts enclosed within use existing software and methods, and are provided 
 
 **Publication**
 
-Paula Restrepo, Alexis Wilder, Aubrey Houser, Harkirat Singh Sandhu, Angie Ramirez, M. Grace Hren, Raman Gill, Abiha Kazmi, Larry Chen, Alexandra Nigro, Ichiro Imanishi, Deniz Demircioglu, Dan Hasson, Alan Soto, Stephanie McQuillan, Edgar Gonzalez-Kozlova, Rachel Brody, Benjamin Ungar, Maria Kasper, Phillip Torina, Jesse M. Lewin, Sacha Gnjatic, Sai Ma, Andrew L. Ji. A single-cell spatial transcriptomic census of human skin anatomy. Nature Genetics. 2025.
+Paula Restrepo, Alexis Wilder, Aubrey Houser, Harkirat Singh Sandhu, Angie Ramirez, M. Grace Hren, Raman Gill, Abiha Kazmi, Larry Chen, Alexandra Nigro, Ichiro Imanishi, Deniz Demircioglu, Dan Hasson, Alan Soto, Stephanie McQuillan, Edgar Gonzalez-Kozlova, Rachel Brody, Benjamin Ungar, Maria Kasper, Phillip Torina, Jesse M. Lewin, Sacha Gnjatic, Sai Ma, Andrew L. Ji. A single-cell spatial transcriptomic census of human skin anatomy. Nature Genetics. 2026.; doi: https://doi.org/10.1038/s41588-026-02552-8
 
 **Preprint:**
 
